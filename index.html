@@ -8,12 +8,21 @@
         * { box-sizing: border-box; margin: 0; padding: 0; }
         body {
             font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            padding: 8px;
-            background: #f8f9fa;
+            padding: 8px; background: #f8f9fa;
         }
         header { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
         header img { max-width: 20px; height: auto; }
         header h1  { font-size: 15px; color: #333; }
+
+        .formula-bar { display: flex; align-items: center; gap: 6px; margin-bottom: 5px; }
+        #cell-name {
+            width: 44px; text-align: center; border: 1px solid #ccc;
+            padding: 2px 4px; background: #eee; font-size: 12px;
+        }
+        #formula-input {
+            flex: 1; border: 1px solid #ccc; padding: 2px 6px;
+            font-size: 12px; background: #fff; font-family: monospace;
+        }
 
         table { border-collapse: collapse; background: #fff; box-shadow: 0 1px 4px rgba(0,0,0,.12); }
         th {
@@ -25,12 +34,28 @@
         th.num-h { width: 32px; }
         td {
             border: 1px solid #ddd; font-size: 12px;
-            width: 80px; height: 22px; text-align: center;
+            width: 80px; height: 22px; position: relative; padding: 0;
         }
         td.num-h {
             background: #eee; border-color: #ccc; text-align: center;
             font-size: 11px; color: #666; user-select: none; width: 32px;
         }
+        .cv {
+            position: absolute; inset: 0; display: flex;
+            align-items: center; justify-content: center;
+            padding: 0 4px; overflow: hidden; white-space: nowrap; pointer-events: none;
+        }
+        .ci {
+            position: absolute; inset: 0; border: 0; opacity: 0;
+            pointer-events: none; width: 100%; height: 100%;
+            font-size: 12px; text-align: center;
+            background: transparent; font-family: monospace;
+        }
+        .ci:focus {
+            opacity: 1; outline: 2px solid #1a73e8;
+            outline-offset: -2px; background: #fff; z-index: 2; pointer-events: auto;
+        }
+        td.active { outline: 2px solid #1a73e8; outline-offset: -2px; z-index: 1; }
         #status { font-size: 11px; color: #666; margin-top: 5px; min-height: 14px; }
     </style>
 </head>
@@ -40,6 +65,11 @@
     <img src="https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcSJWeABAmhV12Opm1jZmowmC4qXr4_-G8vnPoG2keoC6Q&s=10" alt="logo"/>
     <h1>Excel Java</h1>
 </header>
+
+<div class="formula-bar">
+    <span id="cell-name">—</span>
+    <input id="formula-input" type="text" placeholder="" readonly />
+</div>
 
 <table>
     <thead></thead>
@@ -52,27 +82,110 @@
 
 const ROWS  = 20
 const COLS  = 25
-const FIRST = 65   
+const FIRST = 65
 
+const $  = s => document.querySelector(s)
+const $$ = s => document.querySelectorAll(s)
 const range     = n => Array.from({ length: n }, (_, i) => i)
 const colLetter = i => String.fromCharCode(FIRST + i)
 
+function escAttr(s) {
+    return String(s).replace(/&/g, '&amp;').replace(/"/g, '&quot;')
+}
+function setStatus(msg) {
+    $('#status').textContent = msg
+    clearTimeout(setStatus._t)
+    setStatus._t = setTimeout(() => { $('#status').textContent = 'Lista' }, 3000)
+}
+
+
+let STATE = range(COLS).map(() =>
+    range(ROWS).map(() => ({ value: '', computedValue: 0 }))
+)
+let activeCell = null
+
+
+function computeAll(state) {
+    state.forEach((col, x) =>
+        col.forEach((cell, y) => {
+            const n = parseFloat(cell.value)
+            cell.computedValue = cell.value === '' ? 0 : (isNaN(n) ? cell.value : n)
+        })
+    )
+}
+
+function updateCell({ x, y, value }) {
+    const s = structuredClone(STATE)
+    s[x][y].value = value
+    computeAll(s)
+    STATE = s
+    render()
+}
+
 function render() {
-    
-    document.querySelector('thead').innerHTML = `<tr>
+    $('thead').innerHTML = `<tr>
         <th class="num-h"></th>
         ${range(COLS).map(i => `<th class="col-h">${colLetter(i)}</th>`).join('')}
     </tr>`
 
-    document.querySelector('tbody').innerHTML = range(ROWS).map(row =>
+    $('tbody').innerHTML = range(ROWS).map(row =>
         `<tr>
             <td class="num-h">${row + 1}</td>
-            ${range(COLS).map(() => `<td></td>`).join('')}
+            ${range(COLS).map(col => {
+                const cell  = STATE[col][row]
+                const v     = cell.computedValue
+                const disp  = (v === 0 && cell.value === '') ? '' : v
+                const isAct = activeCell?.x === col && activeCell?.y === row
+                return `<td data-x="${col}" data-y="${row}" class="${isAct ? 'active' : ''}">
+                    <span class="cv">${disp}</span>
+                    <input class="ci" type="text" value="${escAttr(cell.value)}" />
+                </td>`
+            }).join('')}
         </tr>`
     ).join('')
 }
 
+function activateCell(x, y) {
+    activeCell = { x, y }
+    render()
+
+    const td    = $(`td[data-x="${x}"][data-y="${y}"]`)
+    const input = td?.querySelector('.ci')
+    if (!input) return
+
+    $('#cell-name').textContent = `${colLetter(x)}${y + 1}`
+    $('#formula-input').value   = STATE[x][y].value
+
+    input.style.opacity       = '1'
+    input.style.pointerEvents = 'auto'
+    input.focus()
+    input.setSelectionRange(input.value.length, input.value.length)
+
+    const onInput = () => { $('#formula-input').value = input.value }
+
+    const onBlur = () => {
+        input.removeEventListener('input', onInput)
+        input.style.opacity       = '0'
+        input.style.pointerEvents = 'none'
+        if (input.value !== STATE[x][y].value) {
+            updateCell({ x, y, value: input.value })
+        }
+    }
+
+    input.addEventListener('input', onInput)
+    input.addEventListener('blur',  onBlur, { once: true })
+}
+
+function setupEvents() {
+    $('tbody').addEventListener('click', e => {
+        const td = e.target.closest('td[data-x]')
+        if (!td) return
+        activateCell(Number(td.dataset.x), Number(td.dataset.y))
+    })
+}
+
 render()
+setupEvents()
 </script>
 </body>
 </html>
