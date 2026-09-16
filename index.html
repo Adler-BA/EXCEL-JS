@@ -97,6 +97,15 @@ function setStatus(msg) {
     setStatus._t = setTimeout(() => { $('#status').textContent = 'Lista' }, 3000)
 }
 
+function parseRef(ref) {
+    const m = ref.match(/^([A-Z]+)(\d+)$/)
+    if (!m) return null
+    const col = m[1].charCodeAt(0) - FIRST
+    const row = parseInt(m[2]) - 1
+    if (col < 0 || col >= COLS || row < 0 || row >= ROWS) return null
+    return { col, row }
+}
+
 function tokenize(formula) {
     const tokens = []
     let i = 0
@@ -111,22 +120,39 @@ function tokenize(formula) {
             continue
         }
 
-
         if (/[A-Za-z]/.test(ch)) {
-            throw new Error('#ERROR!')
+            let name = ''
+            while (i < formula.length && /[A-Za-z]/.test(formula[i])) name += formula[i++].toUpperCase()
+            if (/\d/.test(formula[i] ?? '')) {
+                let num = ''
+                while (i < formula.length && /\d/.test(formula[i])) num += formula[i++]
+                tokens.push({ t: 'REF', v: name + num })
+            } else {
+                throw new Error('#ERROR!')  
+            }
+            continue
         }
 
         if ('+-*/'.includes(ch)) { tokens.push({ t: 'OP', v: ch }); i++; continue }
         if (ch === '(')          { tokens.push({ t: 'LP'        }); i++; continue }
         if (ch === ')')          { tokens.push({ t: 'RP'        }); i++; continue }
-
         throw new Error('#ERROR!')
     }
     return tokens
 }
 
+const computing = new Set()
 
-function parseFormula(tokens) {
+function resolveRef(ref, state) {
+    const pos = parseRef(ref)
+    if (!pos) throw new Error('#REF!')
+    const cell = state[pos.col][pos.row]
+    const val  = evalCell(ref, cell.value, state)
+    if (typeof val === 'string' && val.startsWith('#')) throw new Error(val)
+    return typeof val === 'number' ? val : 0
+}
+
+function parseFormula(tokens, state) {
     let pos = 0
     const peek    = () => tokens[pos]
     const consume = () => tokens[pos++]
@@ -139,8 +165,7 @@ function parseFormula(tokens) {
     function expr() {
         let left = term()
         while (peek()?.t === 'OP' && (peek().v === '+' || peek().v === '-')) {
-            const op    = consume().v
-            const right = term()
+            const op = consume().v; const right = term()
             left = op === '+' ? left + right : left - right
         }
         return left
@@ -149,14 +174,11 @@ function parseFormula(tokens) {
     function term() {
         let left = factor()
         while (peek()?.t === 'OP' && (peek().v === '*' || peek().v === '/')) {
-            const op    = consume().v
-            const right = factor()
+            const op = consume().v; const right = factor()
             if (op === '/') {
                 if (right === 0) throw new Error('#DIV/0!')
                 left = left / right
-            } else {
-                left = left * right
-            }
+            } else { left = left * right }
         }
         return left
     }
@@ -166,12 +188,8 @@ function parseFormula(tokens) {
         if (!tok) throw new Error('#ERROR!')
         if (tok.t === 'OP' && tok.v === '-') { consume(); return -factor() }
         if (tok.t === 'OP' && tok.v === '+') { consume(); return +factor() }
-        if (tok.t === 'LP') {
-            consume()
-            const v = expr()
-            expect('RP')
-            return v
-        }
+        if (tok.t === 'LP') { consume(); const v = expr(); expect('RP'); return v }
+        if (tok.t === 'REF') { consume(); return resolveRef(tok.v, state) }
         if (tok.t === 'NUM') { consume(); return tok.v }
         throw new Error('#ERROR!')
     }
@@ -181,8 +199,8 @@ function parseFormula(tokens) {
     return result
 }
 
-
-function evalCell(cellId, value) {
+function evalCell(cellId, value, state) {
+    if (computing.has(cellId)) return '#CIRCULAR!'
     if (value === '' || value == null) return 0
     if (typeof value === 'number') return value
     if (!value.startsWith('=')) {
@@ -191,11 +209,14 @@ function evalCell(cellId, value) {
     }
     const formula = value.slice(1).trim()
     if (!formula) return 0
+    computing.add(cellId)
     try {
         const tokens = tokenize(formula)
-        return parseFormula(tokens)
+        return parseFormula(tokens, state)
     } catch (e) {
         return e.message.startsWith('#') ? e.message : '#ERROR!'
+    } finally {
+        computing.delete(cellId)
     }
 }
 
@@ -205,12 +226,14 @@ let STATE = range(COLS).map(() =>
 let activeCell = null
 
 function computeAll(state) {
-    state.forEach((col, x) =>
-        col.forEach((cell, y) => {
-            const id = `${colLetter(x)}${y + 1}`
-            cell.computedValue = evalCell(id, cell.value)
-        })
-    )
+    for (let pass = 0; pass < 2; pass++) {
+        state.forEach((col, x) =>
+            col.forEach((cell, y) => {
+                const id = `${colLetter(x)}${y + 1}`
+                cell.computedValue = evalCell(id, cell.value, state)
+            })
+        )
+    }
 }
 
 function updateCell({ x, y, value }) {
@@ -226,7 +249,6 @@ function render() {
         <th class="num-h"></th>
         ${range(COLS).map(i => `<th class="col-h">${colLetter(i)}</th>`).join('')}
     </tr>`
-
     $('tbody').innerHTML = range(ROWS).map(row =>
         `<tr>
             <td class="num-h">${row + 1}</td>
