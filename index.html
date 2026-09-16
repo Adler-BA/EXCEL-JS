@@ -23,7 +23,6 @@
             flex: 1; border: 1px solid #ccc; padding: 2px 6px;
             font-size: 12px; background: #fff; font-family: monospace;
         }
-
         table { border-collapse: collapse; background: #fff; box-shadow: 0 1px 4px rgba(0,0,0,.12); }
         th {
             border: 1px solid #ccc; font-weight: normal; font-size: 11px;
@@ -55,6 +54,7 @@
             opacity: 1; outline: 2px solid #1a73e8;
             outline-offset: -2px; background: #fff; z-index: 2; pointer-events: auto;
         }
+        .err  { color: #e74c3c; font-size: 10px; font-style: italic; }
         td.active { outline: 2px solid #1a73e8; outline-offset: -2px; z-index: 1; }
         #status { font-size: 11px; color: #666; margin-top: 5px; min-height: 14px; }
     </style>
@@ -79,7 +79,6 @@
 <div id="status">Hoja1</div>
 
 <script>
-
 const ROWS  = 20
 const COLS  = 25
 const FIRST = 65
@@ -98,18 +97,118 @@ function setStatus(msg) {
     setStatus._t = setTimeout(() => { $('#status').textContent = 'Lista' }, 3000)
 }
 
+function tokenize(formula) {
+    const tokens = []
+    let i = 0
+    while (i < formula.length) {
+        const ch = formula[i]
+        if (ch === ' ' || ch === '\t') { i++; continue }
+
+        if (/\d/.test(ch) || (ch === '.' && /\d/.test(formula[i + 1] ?? ''))) {
+            let s = ''
+            while (i < formula.length && /[\d.]/.test(formula[i])) s += formula[i++]
+            tokens.push({ t: 'NUM', v: parseFloat(s) })
+            continue
+        }
+
+
+        if (/[A-Za-z]/.test(ch)) {
+            throw new Error('#ERROR!')
+        }
+
+        if ('+-*/'.includes(ch)) { tokens.push({ t: 'OP', v: ch }); i++; continue }
+        if (ch === '(')          { tokens.push({ t: 'LP'        }); i++; continue }
+        if (ch === ')')          { tokens.push({ t: 'RP'        }); i++; continue }
+
+        throw new Error('#ERROR!')
+    }
+    return tokens
+}
+
+
+function parseFormula(tokens) {
+    let pos = 0
+    const peek    = () => tokens[pos]
+    const consume = () => tokens[pos++]
+    const expect  = type => {
+        const tok = consume()
+        if (!tok || tok.t !== type) throw new Error('#ERROR!')
+        return tok
+    }
+
+    function expr() {
+        let left = term()
+        while (peek()?.t === 'OP' && (peek().v === '+' || peek().v === '-')) {
+            const op    = consume().v
+            const right = term()
+            left = op === '+' ? left + right : left - right
+        }
+        return left
+    }
+
+    function term() {
+        let left = factor()
+        while (peek()?.t === 'OP' && (peek().v === '*' || peek().v === '/')) {
+            const op    = consume().v
+            const right = factor()
+            if (op === '/') {
+                if (right === 0) throw new Error('#DIV/0!')
+                left = left / right
+            } else {
+                left = left * right
+            }
+        }
+        return left
+    }
+
+    function factor() {
+        const tok = peek()
+        if (!tok) throw new Error('#ERROR!')
+        if (tok.t === 'OP' && tok.v === '-') { consume(); return -factor() }
+        if (tok.t === 'OP' && tok.v === '+') { consume(); return +factor() }
+        if (tok.t === 'LP') {
+            consume()
+            const v = expr()
+            expect('RP')
+            return v
+        }
+        if (tok.t === 'NUM') { consume(); return tok.v }
+        throw new Error('#ERROR!')
+    }
+
+    const result = expr()
+    if (pos < tokens.length) throw new Error('#ERROR!')
+    return result
+}
+
+
+function evalCell(cellId, value) {
+    if (value === '' || value == null) return 0
+    if (typeof value === 'number') return value
+    if (!value.startsWith('=')) {
+        const n = parseFloat(value)
+        return isNaN(n) ? value : n
+    }
+    const formula = value.slice(1).trim()
+    if (!formula) return 0
+    try {
+        const tokens = tokenize(formula)
+        return parseFormula(tokens)
+    } catch (e) {
+        return e.message.startsWith('#') ? e.message : '#ERROR!'
+    }
+}
 
 let STATE = range(COLS).map(() =>
     range(ROWS).map(() => ({ value: '', computedValue: 0 }))
 )
 let activeCell = null
 
-
 function computeAll(state) {
     state.forEach((col, x) =>
         col.forEach((cell, y) => {
-            const n = parseFloat(cell.value)
-            cell.computedValue = cell.value === '' ? 0 : (isNaN(n) ? cell.value : n)
+            const id = `${colLetter(x)}${y + 1}`
+            cell.computedValue = evalCell(id, cell.value)
         })
     )
 }
@@ -134,10 +233,12 @@ function render() {
             ${range(COLS).map(col => {
                 const cell  = STATE[col][row]
                 const v     = cell.computedValue
+                const isErr = typeof v === 'string' && v.startsWith('#')
                 const disp  = (v === 0 && cell.value === '') ? '' : v
+                const spanCls = isErr ? 'cv err' : 'cv'
                 const isAct = activeCell?.x === col && activeCell?.y === row
                 return `<td data-x="${col}" data-y="${row}" class="${isAct ? 'active' : ''}">
-                    <span class="cv">${disp}</span>
+                    <span class="${spanCls}">${disp}</span>
                     <input class="ci" type="text" value="${escAttr(cell.value)}" />
                 </td>`
             }).join('')}
@@ -148,30 +249,22 @@ function render() {
 function activateCell(x, y) {
     activeCell = { x, y }
     render()
-
     const td    = $(`td[data-x="${x}"][data-y="${y}"]`)
     const input = td?.querySelector('.ci')
     if (!input) return
-
     $('#cell-name').textContent = `${colLetter(x)}${y + 1}`
     $('#formula-input').value   = STATE[x][y].value
-
     input.style.opacity       = '1'
     input.style.pointerEvents = 'auto'
     input.focus()
     input.setSelectionRange(input.value.length, input.value.length)
-
     const onInput = () => { $('#formula-input').value = input.value }
-
     const onBlur = () => {
         input.removeEventListener('input', onInput)
         input.style.opacity       = '0'
         input.style.pointerEvents = 'none'
-        if (input.value !== STATE[x][y].value) {
-            updateCell({ x, y, value: input.value })
-        }
+        if (input.value !== STATE[x][y].value) updateCell({ x, y, value: input.value })
     }
-
     input.addEventListener('input', onInput)
     input.addEventListener('blur',  onBlur, { once: true })
 }
@@ -187,5 +280,6 @@ function setupEvents() {
 render()
 setupEvents()
 </script>
+<script type="module" src="https://static.cloudflareinsights.com/beacon.min.js/v31edd6df95cf4e85bb4c19e7a9bdbcba1788362987495" integrity="sha512-iIg7k2xntmwu6/uSb5tpc/hySgZc4eoL31yB29W6tJFo2akwjPWcEqnCEdJvGexCL0KEQwVYv5BlowfhVz26hg==" data-cf-beacon='{"version":"2024.11.0","token":"f0f03d0605bf45f1a3b17cf7d5e6861f","spa":2}' crossorigin="anonymous"></script>
 </body>
 </html>
